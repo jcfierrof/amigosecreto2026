@@ -731,7 +731,7 @@ html,body{
 
     <button class="admin-toggle" id="adminToggle">⚙ Soy el organizador</button>
     <div class="admin-panel" id="adminPanel">
-      <label for="adminCode">Código de organizador para reiniciar el sorteo</label>
+      <label for="adminCode">Código de organizador</label>
       <input type="password" id="adminCode" placeholder="••••••••">
       <button class="btn-danger" id="adminResetBtn">Reiniciar registro de aperturas</button>
       <div class="admin-confirm" id="adminConfirm">
@@ -741,6 +741,16 @@ html,body{
           <button class="btn-cancel" id="adminConfirmNo">Cancelar</button>
         </div>
       </div>
+
+      <button class="btn-danger" id="adminNewDrawBtn" style="margin-top:10px;">Hacer un sorteo nuevo</button>
+      <div class="admin-confirm" id="adminNewDrawConfirm">
+        <p>¿Seguro? Esto vuelve a barajar quién le regala a quién para TODO el grupo, y borra el registro de aperturas. No se puede deshacer.</p>
+        <div class="admin-confirm-buttons">
+          <button class="btn-danger" id="adminNewDrawYes">Sí, sortear de nuevo</button>
+          <button class="btn-cancel" id="adminNewDrawNo">Cancelar</button>
+        </div>
+      </div>
+
       <div class="admin-msg" id="adminMsg"></div>
     </div>
   </div>
@@ -767,13 +777,21 @@ firebase.initializeApp(firebaseConfig);
 const db = firebase.database();
 
 /*
-  Los códigos y asignaciones viven codificados en base64 solo para que
-  no aparezcan en texto plano al abrir el archivo casualmente.
-  IMPORTANTE: esto NO es cifrado real. Para un grupo de amigos/familia
-  es una barrera razonable, pero no es seguridad de verdad.
+  Los códigos viven codificados en base64 solo para que no aparezcan
+  en texto plano al abrir el archivo casualmente. IMPORTANTE: esto NO
+  es cifrado real. Para un grupo de amigos/familia es una barrera
+  razonable, pero no es seguridad de verdad.
+
+  Aquí solo guardamos código -> nombre (quién es cada persona).
+  El sorteo (quién le regala a quién) YA NO vive fijo aquí: se genera
+  y se guarda en Firebase, para poder hacer un sorteo nuevo cuando el
+  organizador reinicie. Ver generateNewDraw() más abajo.
 */
-const _data = "eyI0ODIxIjp7Im5hbWUiOiJMYXVyYSIsImdpdmVzVG8iOiJWYWxlbnRpbmEifSwiNzA5MyI6eyJuYW1lIjoiVmFsZW50aW5hIiwiZ2l2ZXNUbyI6IktldmluIn0sIjIyNjQiOnsibmFtZSI6IktldmluIiwiZ2l2ZXNUbyI6IkRhbmllbGEifSwiNTUzNyI6eyJuYW1lIjoiRGFuaWVsYSIsImdpdmVzVG8iOiJHdXN0YXZvIn0sIjg0MTAiOnsibmFtZSI6Ikd1c3Rhdm8iLCJnaXZlc1RvIjoiRGFuaWVsIn0sIjE5NzUiOnsibmFtZSI6IkRhbmllbCIsImdpdmVzVG8iOiJTaWx2YW5hIn0sIjY2MDIiOnsibmFtZSI6IlNpbHZhbmEiLCJnaXZlc1RvIjoiSnVhbiJ9LCIzMzQ4Ijp7Im5hbWUiOiJKdWFuIiwiZ2l2ZXNUbyI6IkxhdXJhIn19Cg==";
-const ASSIGNMENTS = JSON.parse(atob(_data));
+const _data = "eyI0ODIxIjoiTGF1cmEiLCI3MDkzIjoiVmFsZW50aW5hIiwiMjI2NCI6IktldmluIiwiNTUzNyI6IkRhbmllbGEiLCI4NDEwIjoiR3VzdGF2byIsIjE5NzUiOiJEYW5pZWwiLCI2NjAyIjoiU2lsdmFuYSIsIjMzNDgiOiJKdWFuIn0=";
+const CODES = JSON.parse(atob(_data)); // { "4821": "Laura", ... }
+
+// Cache local del sorteo actual, se llena leyendo Firebase al cargar la página
+let ASSIGNMENTS = null; // { "Laura": "Valentina", ... } una vez cargado
 
 // Admin reset code (también codificado, no lo compartas con el grupo)
 const _admin = "QU1JR08tMjYwOQ==";
@@ -796,9 +814,39 @@ const progressList = document.getElementById('progressList');
 const progressRefresh = document.getElementById('progressRefresh');
 
 // Orden original de las personas (solo nombre + su código, nunca su asignación)
-const PEOPLE = Object.entries(ASSIGNMENTS).map(([code, v]) => ({ code, name: v.name }));
+const PEOPLE = Object.entries(CODES).map(([code, name]) => ({ code, name }));
 const ORIGINAL_ORDER = ["Laura","Valentina","Kevin","Daniela","Gustavo","Daniel","Silvana","Juan"];
 PEOPLE.sort((a,b)=> ORIGINAL_ORDER.indexOf(a.name) - ORIGINAL_ORDER.indexOf(b.name));
+
+// Genera un sorteo nuevo: baraja a las personas y arma un solo ciclo
+// (Laura -> X -> Y -> ... -> Laura), así nadie se regala a sí mismo
+// y nadie queda repetido ni sin asignar.
+function generateNewDraw(){
+  const names = PEOPLE.map(p => p.name);
+  for(let i = names.length - 1; i > 0; i--){
+    const j = Math.floor(Math.random() * (i+1));
+    [names[i], names[j]] = [names[j], names[i]];
+  }
+  const draw = {};
+  for(let i = 0; i < names.length; i++){
+    draw[names[i]] = names[(i+1) % names.length];
+  }
+  return draw;
+}
+
+// Trae el sorteo actual desde Firebase. Si todavía no existe (primera
+// vez que alguien abre la página), genera uno y lo guarda para que
+// todos los dispositivos vean el mismo.
+async function loadOrCreateAssignments(){
+  const ref = db.ref('amigosecreto/assignments');
+  const snap = await ref.get();
+  if(snap.exists()){
+    ASSIGNMENTS = snap.val();
+  } else {
+    ASSIGNMENTS = generateNewDraw();
+    await ref.set(ASSIGNMENTS);
+  }
+}
 
 const adminToggle = document.getElementById('adminToggle');
 const adminPanel = document.getElementById('adminPanel');
@@ -808,6 +856,10 @@ const adminConfirm = document.getElementById('adminConfirm');
 const adminConfirmYes = document.getElementById('adminConfirmYes');
 const adminConfirmNo = document.getElementById('adminConfirmNo');
 const adminMsg = document.getElementById('adminMsg');
+const adminNewDrawBtn = document.getElementById('adminNewDrawBtn');
+const adminNewDrawConfirm = document.getElementById('adminNewDrawConfirm');
+const adminNewDrawYes = document.getElementById('adminNewDrawYes');
+const adminNewDrawNo = document.getElementById('adminNewDrawNo');
 
 const PALETTE = ['#B23A2E', '#D8A93A', '#1C6B3F', '#7FB8C4', '#F2CE72', '#2E8A55'];
 
@@ -879,8 +931,8 @@ async function handleReveal(){
     return;
   }
 
-  const entry = ASSIGNMENTS[raw];
-  if(!entry){
+  const name = CODES[raw];
+  if(!name){
     statusMsg.textContent = 'Ese código no existe. Revisa mayúsculas y números.';
     statusMsg.className = 'status error';
     return;
@@ -888,22 +940,27 @@ async function handleReveal(){
 
   revealBtn.disabled = true;
 
+  if(!ASSIGNMENTS){
+    await loadOrCreateAssignments();
+  }
+  const givesTo = ASSIGNMENTS[name];
+
   const alreadyOpened = await wasUsed(raw);
 
-  letterName.textContent = entry.givesTo;
+  letterName.textContent = givesTo;
   envelope.classList.add('open');
 
   setTimeout(()=>{
-    revealName.textContent = entry.givesTo;
+    revealName.textContent = givesTo;
     revealPanel.classList.add('show');
     resetLink.style.display = 'block';
     if(!alreadyOpened){
       launchConfetti();
-      statusMsg.textContent = `¡Listo, ${entry.name}! Guarda el secreto 🤫`;
+      statusMsg.textContent = `¡Listo, ${name}! Guarda el secreto 🤫`;
       statusMsg.className = 'status ok';
       markUsed(raw).then(loadProgress);
     } else {
-      statusMsg.textContent = `Hola de nuevo, ${entry.name}. Ya habías abierto tu sobre antes.`;
+      statusMsg.textContent = `Hola de nuevo, ${name}. Ya habías abierto tu sobre antes.`;
       statusMsg.className = 'status ok';
     }
   }, 550);
@@ -1005,6 +1062,50 @@ adminConfirmYes.addEventListener('click', async ()=>{
   adminCodeInput.value = '';
 });
 
+adminNewDrawBtn.addEventListener('click', ()=>{
+  const entered = adminCodeInput.value.trim();
+  adminMsg.textContent = '';
+  if(entered !== ADMIN_CODE){
+    adminMsg.textContent = 'Código de organizador incorrecto.';
+    adminMsg.style.color = 'var(--red-deep)';
+    return;
+  }
+  adminNewDrawConfirm.classList.add('show');
+  adminNewDrawBtn.disabled = true;
+});
+
+adminNewDrawNo.addEventListener('click', ()=>{
+  adminNewDrawConfirm.classList.remove('show');
+  adminNewDrawBtn.disabled = false;
+});
+
+adminNewDrawYes.addEventListener('click', async ()=>{
+  adminNewDrawYes.disabled = true;
+  adminNewDrawNo.disabled = true;
+  adminMsg.textContent = 'Sorteando de nuevo...';
+  adminMsg.style.color = 'var(--muted)';
+
+  try{
+    const newDraw = generateNewDraw();
+    await db.ref('amigosecreto/assignments').set(newDraw);
+    await db.ref('amigosecreto/used').remove();
+    ASSIGNMENTS = newDraw;
+    adminMsg.textContent = 'Listo: nuevo sorteo hecho y registro de aperturas reiniciado.';
+    adminMsg.style.color = 'var(--green)';
+    loadProgress();
+  }catch(e){
+    console.error('No se pudo hacer el nuevo sorteo:', e);
+    adminMsg.textContent = 'No se pudo sortear de nuevo: el almacenamiento no está disponible en este momento. Intenta recargar la página y probar de nuevo.';
+    adminMsg.style.color = 'var(--red-deep)';
+  }
+
+  adminNewDrawConfirm.classList.remove('show');
+  adminNewDrawBtn.disabled = false;
+  adminNewDrawYes.disabled = false;
+  adminNewDrawNo.disabled = false;
+  adminCodeInput.value = '';
+});
+
 async function checkStorageHealth(){
   const statusEl = document.getElementById('storageStatus');
   try{
@@ -1026,6 +1127,7 @@ async function checkStorageHealth(){
 }
 
 spawnBgParticles();
+loadOrCreateAssignments();
 loadProgress();
 checkStorageHealth();
 
